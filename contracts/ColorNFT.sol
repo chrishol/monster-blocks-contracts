@@ -77,8 +77,6 @@ contract ColorNFTs is ERC721Pausable, Ownable, ReentrancyGuard, VRFConsumerBase 
     uint256 dna
   );
 
-  Counters.Counter
-
   function generateColorNFT(uint256 _quantity, uint256 _deadline) external payable nonReentrant whenNotPaused {
     require(_tokenIds.current() < maxSupply, "maximum mint count reached");
     require(_tokenIds.current() + _quantity <= maxSupply, "mint quantity exceeds max supply");
