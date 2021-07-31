@@ -23,8 +23,8 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
   address private LinkToken = 0x01BE23585060835E02B77ef475b0Cc51aA1e0709;
 
   // TODO: Update for Mainnet
-  uint256 public constant NFTMintPrice = 7000000000000000; // 0.007 ETH - TODO
-  uint256 public constant maxSupply = 50; // TODO
+  uint256 public constant NFTMintPrice = 1000000000000000; // 0.001 ETH - TODO
+  uint256 public constant maxSupply = 7000; // TODO
   uint256 public constant maxMintLimit = 10;
 
   uint256 public constant numberOfTraits = 6;
