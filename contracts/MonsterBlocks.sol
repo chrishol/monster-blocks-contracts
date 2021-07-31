@@ -126,7 +126,7 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
   }
 
   mapping(uint256 => uint256) public monsterBlocksDna; // TODO: Make internal
-  mapping(bytes32 => uint256) public vrfRequestIds; // TODO: Make internal
+  mapping(bytes32 => uint256[]) public vrfRequestIds; // TODO: Make internal
   mapping(uint256 => uint256) public mintedTraitIndex; // TODO: Make internal
   mapping(uint256 => uint256[]) public stacks; // TODO: Make internal
 
@@ -194,15 +194,15 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
     address[] memory path = new address[](2);
     path[0] = uniswapRouter.WETH();
     path[1] = LinkToken;
-    uniswapRouter.swapETHForExactTokens{value: msg.value} (LinkFee * _quantity, path, address(this), _deadline);
+    uniswapRouter.swapETHForExactTokens{value: msg.value} (LinkFee, path, address(this), _deadline);
 
-    for (uint256 i = 0; i < _quantity; i++) {
+    require(LINK.balanceOf(address(this)) >= LinkFee, "Not enough LINK");
+    bytes32 requestId = requestRandomness(keyHash, LinkFee);
+
+    for (uint8 i = 0; i < _quantity; i++) {
       _tokenIds.increment();
 
-      require(LINK.balanceOf(address(this)) >= LinkFee, "Not enough LINK");
-      bytes32 requestId = requestRandomness(keyHash, LinkFee, uint256(blockhash(block.number - i)));
-
-      vrfRequestIds[requestId] = _tokenIds.current();
+      vrfRequestIds[requestId].push(_tokenIds.current());
 
       _safeMint(msg.sender, _tokenIds.current());
 
@@ -241,21 +241,29 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
   }
 
   function fulfillRandomness(bytes32 _requestId, uint256 _randomNumber) internal override {
-    monsterBlocksDna[vrfRequestIds[_requestId]] = _randomNumber;
+    for (uint8 k = 0; k < vrfRequestIds[_requestId].length; k++) {
+      uint256 blockDna;
+      if (k == 0) {
+        blockDna = _randomNumber;
+      } else {
+        blockDna = uint256(keccak256(abi.encode(_randomNumber, numberOfTraits * k)));
+      }
+      monsterBlocksDna[vrfRequestIds[_requestId][k]] = blockDna;
 
-    for (uint256 i = 0; i < numberOfTraits; i++) {
-      uint256 currentWeight = traitWeighting;
-      uint256 dnaModuloWeight = (uint256(keccak256(abi.encode(_randomNumber, i))) % currentWeight) + 1;
+      for (uint8 i = 0; i < numberOfTraits; i++) {
+        uint256 currentWeight = traitWeighting;
+        uint256 dnaModuloWeight = (uint256(keccak256(abi.encode(blockDna, i))) % currentWeight) + 1;
 
-      for (uint8 j = 0; j < traitProbabilities[i].length; j++) {
-        currentWeight -= traitProbabilities[i][j];
-        if (dnaModuloWeight > currentWeight) {
-          mintedTraits[vrfRequestIds[_requestId] - 1][i] = j;
-          break;
+        for (uint8 j = 0; j < traitProbabilities[i].length; j++) {
+          currentWeight -= traitProbabilities[i][j];
+          if (dnaModuloWeight > currentWeight) {
+            mintedTraits[mintedTraitIndex[vrfRequestIds[_requestId][k]]][i] = j;
+            break;
+          }
         }
       }
-    }
 
-    emit UpdateMonsterBlock(vrfRequestIds[_requestId], _randomNumber);
+      emit UpdateMonsterBlock(vrfRequestIds[_requestId][k], _randomNumber);
+    }
   }
 }
