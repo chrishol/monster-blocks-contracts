@@ -18,9 +18,9 @@
  *
  */
 
+require('dotenv').config();
 const HDWalletProvider = require('@truffle/hdwallet-provider');
-const fs = require('fs');
-const mnemonic = fs.readFileSync(".secret").toString().trim();
+const { QUICKNODE_URL, MNEMONIC } = process.env;
 
 module.exports = {
   /**
@@ -57,7 +57,7 @@ module.exports = {
     // Useful for deploying to a public network.
     // NB: It's important to wrap the provider as a function.
     rinkeby: {
-      provider: () => new HDWalletProvider(mnemonic, `https://old-silent-silence.rinkeby.quiknode.pro/80885d025c44cfb2e99624082d67546d4544834c/`),
+      provider: () => new HDWalletProvider(MNEMONIC, QUICKNODE_URL),
       network_id: 4,       // Rinkeby's id
       gas: 10000000,        // Rinkeby has a lower block limit than mainnet
       gasPrice: 20000000000,  // 20 gwei (in wei) (default: 100 gwei)
@@ -85,10 +85,10 @@ module.exports = {
       // docker: true,        // Use "0.5.1" you've installed locally with docker (default: false)
       settings: {          // See the solidity docs for advice about optimization and evmVersion
        optimizer: {
-         enabled: false,
-         runs: 1
+         enabled: true,
+         runs: 5
        },
-       evmVersion: "byzantium"
+       evmVersion: "petersburg"
       }
     }
   },
