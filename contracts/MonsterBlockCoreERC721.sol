@@ -24,7 +24,7 @@ abstract contract MonsterBlockCoreERC721 is ERC721, ERC721Enumerable, ERC721URIS
     _unpause();
   }
 
-  function _beforeTokenTransfer(address from, address to, uint256 tokenId) internal whenNotPaused override(ERC721, ERC721Enumerable) {
+  function _beforeTokenTransfer(address from, address to, uint256 tokenId) internal override(ERC721, ERC721Enumerable) {
     super._beforeTokenTransfer(from, to, tokenId);
   }
 

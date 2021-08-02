@@ -13,29 +13,47 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
 
   Counters.Counter private _tokenIds;
   Counters.Counter private _originalTokenIds;
+  Counters.Counter private _ownerMintedTokenIds;
 
   IUniswapV2Router02 public uniswapRouter;
 
   // TODO: Update for Mainnet
   bytes32 internal keyHash = 0x2ed0feb3e7fd2022120aa84fab1945545a9f2ffc9076fd6156fa96eaff4c1311;
-  uint256 internal LinkFee = 0.1 * 10**18; // 0.1 LINK (Rinkeby)
+  uint256 internal LinkFee = 0.1 * 10**18; // 0.1 LINK (Rinkeby) TODO for Mainnet
   address private VRFCoordinator = 0xb3dCcb4Cf7a26f6cf6B120Cf5A73875B7BBc655B;
   address private LinkToken = 0x01BE23585060835E02B77ef475b0Cc51aA1e0709;
 
   // TODO: Update for Mainnet
   uint256 public constant NFTMintPrice = 1000000000000000; // 0.001 ETH - TODO
   uint256 public constant maxSupply = 7000; // TODO
+  uint256 public constant maxOwnerMintedSupply = 50; // TODO
   uint256 public constant maxMintLimit = 10;
 
   uint256 public constant numberOfTraits = 6;
   uint256 internal constant traitWeighting = 1000;
 
-  // N.B. Traits are zero-indexed, but tokens are 1-indexed
-  uint8[numberOfTraits][maxSupply] public mintedTraits; // TODO: Make internal
-
   uint16[][numberOfTraits] internal traitProbabilities;
   string[numberOfTraits] internal traitCategories;
   string[][numberOfTraits] internal traitNames;
+
+  mapping(uint256 => uint256) public monsterBlocksDna; // TODO: Make internal
+  mapping(bytes32 => uint256[]) public vrfRequestIds; // TODO: Make internal
+  mapping(uint256 => uint256[]) public stacks; // TODO: Make internal
+
+  event GenerateMonsterBlock(
+    uint256 tokenId
+  );
+
+  event UpdateMonsterBlock(
+    uint256 indexed id,
+    uint256 dna
+  );
+
+  event StackMonsterBlock(
+    uint256 tokenId1,
+    uint256 tokenId2,
+    uint256 resultTokenId
+  );
 
   constructor(
     uint16[] memory blockBaseProbabilities,
@@ -125,28 +143,7 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
     ];
   }
 
-  mapping(uint256 => uint256) public monsterBlocksDna; // TODO: Make internal
-  mapping(bytes32 => uint256[]) public vrfRequestIds; // TODO: Make internal
-  mapping(uint256 => uint256) public mintedTraitIndex; // TODO: Make internal
-  mapping(uint256 => uint256[]) public stacks; // TODO: Make internal
-
-  event GenerateMonsterBlock(
-    uint256 tokenId
-  );
-
-  event UpdateMonsterBlock(
-    uint256 indexed id,
-    uint256 dna
-  );
-
-  event StackMonsterBlock(
-    uint256 tokenId1,
-    uint256 tokenId2,
-    uint256 resultTokenId
-  );
-
-  function traitMetadata(uint256 _tokenId) public view returns (string memory) {
-    require(_exists(_tokenId), "Not minted");
+  function traitMetadata(uint256 _tokenId) external view returns (string memory) {
     require(stacks[_tokenId].length > 1 || monsterBlocksDna[_tokenId] != 0, "No DNA yet");
 
     string memory resultString = '{';
@@ -158,31 +155,30 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
         resultString = strConcat(resultString, '"');
         resultString = strConcat(resultString, traitCategories[j]);
         resultString = strConcat(resultString, '": "');
-        resultString = strConcat(resultString, traitNames[j][mintedTraits[mintedTraitIndex[_tokenId]][j]]);
+        resultString = strConcat(resultString, traitNames[j][getMintedTrait(stacks[_tokenId][i], j)]);
         resultString = strConcat(resultString, '"');
       }
     }
-    resultString = strConcat(resultString, ', ');
+
     resultString = strConcat(resultString, stackMetadata(_tokenId));
-    resultString = strConcat(resultString, ', "Stack Height": "');
+
+    resultString = strConcat(resultString, ', "Tower Height": "');
     resultString = strConcat(resultString, Strings.toString(stacks[_tokenId].length));
-    return strConcat(resultString, '"}');
+    resultString = strConcat(resultString, '"');
+
+    return strConcat(resultString, '}');
   }
 
-  function stackMetadata(uint256 _tokenId) internal view returns (string memory) {
-    string memory resultString = '';
-    for (uint8 i = 0; i < stacks[_tokenId].length; i++) {
-      if (i > 0) {
-        resultString = strConcat(resultString, ', ');
-      }
-      resultString = strConcat(resultString, '"');
-      resultString = strConcat(resultString, 'Token ');
-      resultString = strConcat(resultString, Strings.toString(i));
-      resultString = strConcat(resultString, '": "');
-      resultString = strConcat(resultString, Strings.toString(stacks[_tokenId][i] + 1));
-      resultString = strConcat(resultString, '"');
+  function ownerMintMonsterBlocks(uint256 _quantity) external onlyOwner {
+    require(_ownerMintedTokenIds.current() < maxOwnerMintedSupply, "Maximum minted");
+    require(_ownerMintedTokenIds.current() + _quantity <= maxOwnerMintedSupply, "Not enough left");
+    require(_quantity < maxMintLimit + 1, "Max mint is 10");
+
+    for (uint8 i = 0; i < _quantity; i++) {
+      _ownerMintedTokenIds.increment();
     }
-    return resultString;
+
+    mintMonsterBlock(_quantity);
   }
 
   function generateMonsterBlock(uint256 _quantity, uint256 _deadline) external payable whenNotPaused {
@@ -196,6 +192,38 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
     path[1] = LinkToken;
     uniswapRouter.swapETHForExactTokens{value: msg.value} (LinkFee, path, address(this), _deadline);
 
+    mintMonsterBlock(_quantity);
+  }
+
+  function engageStackinator(uint256 _bottomToken, uint256 _topToken) external {
+    require(_exists(_bottomToken), "Bottom token does not exist");
+    require(_exists(_topToken), "Top token does not exist");
+    require(_isApprovedOrOwner(msg.sender, _bottomToken), "Not approved for bottom token");
+    require(_isApprovedOrOwner(msg.sender, _topToken), "Not approved for top token");
+    require(_bottomToken != _topToken, "Tokens are the same");
+
+    _tokenIds.increment();
+
+    _burn(_bottomToken);
+    _burn(_topToken);
+
+    _safeMint(msg.sender, _tokenIds.current());
+
+    for (uint8 i = 0; i < stacks[_bottomToken].length; i++) {
+      stacks[_tokenIds.current()].push(stacks[_bottomToken][i]);
+    }
+    for (uint8 i = 0; i < stacks[_topToken].length; i++) {
+      stacks[_tokenIds.current()].push(stacks[_topToken][i]);
+    }
+
+    emit StackMonsterBlock(_tokenId1, _topToken, _tokenIds.current());
+  }
+
+  function setLinkFee(uint256 _LinkFee) external onlyOwner {
+    LinkFee = _LinkFee;
+  }
+
+  function mintMonsterBlock(uint256 _quantity) internal {
     require(LINK.balanceOf(address(this)) >= LinkFee, "Not enough LINK");
     bytes32 requestId = requestRandomness(keyHash, LinkFee);
 
@@ -207,63 +235,55 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       _safeMint(msg.sender, _tokenIds.current());
 
       stacks[_tokenIds.current()] = [_tokenIds.current()];
-      mintedTraitIndex[_tokenIds.current()] = _originalTokenIds.current();
       _originalTokenIds.increment();
 
       emit GenerateMonsterBlock(_tokenIds.current());
     }
   }
 
-  function engageStackinator(uint256 _tokenId1, uint256 _tokenId2) external {
-    require(ownerOf(_tokenId1) == msg.sender, "Do not own token 1");
-    require(ownerOf(_tokenId2) == msg.sender, "Do not own token 2");
-    require(_tokenId1 != _tokenId2, "Tokens are the same");
-
-    _tokenIds.increment();
-
-    _burn(_tokenId1);
-    _burn(_tokenId2);
-
-    _safeMint(msg.sender, _tokenIds.current());
-
-    for (uint8 i = 0; i < stacks[_tokenId1].length; i++) {
-      stacks[_tokenIds.current()].push(stacks[_tokenId1][i]);
-    }
-    for (uint8 i = 0; i < stacks[_tokenId2].length; i++) {
-      stacks[_tokenIds.current()].push(stacks[_tokenId2][i]);
-    }
-
-    emit StackMonsterBlock(_tokenId1, _tokenId2, _tokenIds.current());
-  }
-
-  function setLinkFee(uint256 _LinkFee) public onlyOwner {
-    LinkFee = _LinkFee;
-  }
-
   function fulfillRandomness(bytes32 _requestId, uint256 _randomNumber) internal override {
-    for (uint8 k = 0; k < vrfRequestIds[_requestId].length; k++) {
+    for (uint8 i = 0; i < vrfRequestIds[_requestId].length; i++) {
       uint256 blockDna;
-      if (k == 0) {
+      if (i == 0) {
         blockDna = _randomNumber;
       } else {
-        blockDna = uint256(keccak256(abi.encode(_randomNumber, numberOfTraits * k)));
+        blockDna = uint256(keccak256(abi.encode(_randomNumber, numberOfTraits * i)));
       }
-      monsterBlocksDna[vrfRequestIds[_requestId][k]] = blockDna;
+      monsterBlocksDna[vrfRequestIds[_requestId][i]] = blockDna;
 
-      for (uint8 i = 0; i < numberOfTraits; i++) {
-        uint256 currentWeight = traitWeighting;
-        uint256 dnaModuloWeight = (uint256(keccak256(abi.encode(blockDna, i))) % currentWeight) + 1;
-
-        for (uint8 j = 0; j < traitProbabilities[i].length; j++) {
-          currentWeight -= traitProbabilities[i][j];
-          if (dnaModuloWeight > currentWeight) {
-            mintedTraits[mintedTraitIndex[vrfRequestIds[_requestId][k]]][i] = j;
-            break;
-          }
-        }
-      }
-
-      emit UpdateMonsterBlock(vrfRequestIds[_requestId][k], _randomNumber);
+      emit UpdateMonsterBlock(vrfRequestIds[_requestId][i], blockDna);
     }
+  }
+
+  function getMintedTrait(uint256 _tokenId, uint8 _traitIndex) internal view returns (uint256) {
+    uint256 currentWeight = traitWeighting;
+    uint256 dnaModuloWeight = (uint256(keccak256(abi.encode(monsterBlocksDna[_tokenId], _traitIndex + 1))) % currentWeight) + 1;
+
+    for (uint8 j = 0; j < traitProbabilities[_traitIndex].length; j++) {
+      currentWeight -= traitProbabilities[_traitIndex][j];
+      if (dnaModuloWeight > currentWeight) {
+        return j;
+      }
+    }
+
+    return 0;
+  }
+
+  function stackMetadata(uint256 _tokenId) internal view returns (string memory) {
+    string memory resultString = '';
+
+    if (stacks[_tokenId].length < 2) {
+      return resultString;
+    }
+
+    for (uint8 i = 0; i < stacks[_tokenId].length; i++) {
+      resultString = strConcat(resultString, ', "Token ');
+      resultString = strConcat(resultString, Strings.toString(i + 1));
+      resultString = strConcat(resultString, '": "');
+      resultString = strConcat(resultString, Strings.toString(stacks[_tokenId][i]));
+      resultString = strConcat(resultString, '"');
+    }
+
+    return resultString;
   }
 }
