@@ -48,6 +48,10 @@ abstract contract MonsterBlockCoreERC721 is ERC721, ERC721Enumerable, ERC721URIS
     baseURI = baseURI_;
   }
 
+  function _baseURI() internal view virtual override returns (string memory) {
+      return baseURI;
+  }
+
   function withdraw() public onlyOwner {
     (bool success, ) = msg.sender.call { value: address(this).balance }('');
     require(success, "Withdrawal failed");

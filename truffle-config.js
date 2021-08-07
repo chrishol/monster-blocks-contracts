@@ -59,7 +59,7 @@ module.exports = {
     rinkeby: {
       provider: () => new HDWalletProvider(MNEMONIC, QUICKNODE_URL),
       network_id: 4,       // Rinkeby's id
-      gas: 10000000,        // Rinkeby has a lower block limit than mainnet
+      gas: 20000000,        // Rinkeby has a lower block limit than mainnet
       gasPrice: 20000000000,  // 20 gwei (in wei) (default: 100 gwei)
       confirmations: 2,    // # of confs to wait between deployments. (default: 0)
       timeoutBlocks: 200,  // # of blocks before a deployment times out  (minimum/default: 50)
