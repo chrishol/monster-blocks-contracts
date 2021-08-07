@@ -9,8 +9,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/Pausable.sol";
 
 abstract contract MonsterBlockCoreERC721 is ERC721, ERC721Enumerable, ERC721URIStorage, Pausable, Ownable {
-
   string public baseURI;
+  address internal withdrawContract;
+  address internal charityAddress;
 
   function strConcat(string memory _a, string memory _b) internal pure returns(string memory) {
     return string(abi.encodePacked(bytes(_a), bytes(_b)));
@@ -53,8 +54,11 @@ abstract contract MonsterBlockCoreERC721 is ERC721, ERC721Enumerable, ERC721URIS
   }
 
   function withdraw() public onlyOwner {
-    (bool success, ) = msg.sender.call { value: address(this).balance }('');
-    require(success, "Withdrawal failed");
+    (bool charitySuccess, ) = payable(charityAddress).call { value: address(this).balance / 10 }('');
+    require(charitySuccess, "Charity donation failed");
+
+    (bool withdrawSuccess, ) = payable(withdrawContract).call { value: address(this).balance }('');
+    require(withdrawSuccess, "Withdrawal failed");
   }
 
   receive() external payable {}

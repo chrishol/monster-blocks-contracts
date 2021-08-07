@@ -25,9 +25,9 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
 
   // TODO: Update for Mainnet
   uint256 public constant NFTMintPrice = 1000000000000000; // 0.001 ETH - TODO
-  uint256 public constant maxSupply = 7000; // TODO
+  uint256 public constant maxSupply = 10000; // TODO
   uint256 public constant maxOwnerMintedSupply = 50; // TODO
-  uint256 public constant maxMintLimit = 10;
+  uint256 public constant maxMintLimit = 20;
 
   uint256 public constant numberOfTraits = 6;
   uint256 internal constant traitWeighting = 1000;
@@ -45,6 +45,67 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
   mapping(uint256 => bool) internal topBlockFlourishOverrides;
   mapping(address => uint256) internal amountPreMintableByAddress;
 
+  /* Pre-Minting */
+  /* Reward your earliest supporters! */
+
+  event PreMintingPaused(address account);
+  event PreMintingUnpaused(address account);
+  bool private _preMintingPaused;
+
+  function preMintingPaused() public view virtual returns (bool) {
+      return _preMintingPaused;
+  }
+
+  function pausePreMinting() public onlyOwner {
+      _preMintingPaused = true;
+      emit PreMintingPaused(_msgSender());
+  }
+
+  function _unpausePreMinting() public onlyOwner {
+      _preMintingPaused = false;
+      emit PreMintingUnpaused(_msgSender());
+  }
+
+  function preMintMonsterBlock(uint256 _quantity, uint256 _deadline) external payable {
+    require(!preMintingPaused(), "Pre-minting paused");
+    require(_originalTokenIds.current() < maxSupply, "Maximum minted");
+    require(_originalTokenIds.current() + _quantity <= maxSupply, "Not enough left");
+    require(_quantity < amountPreMintableByAddress[msg.sender] + 1, "Cannot pre-mint this many");
+    require(NFTMintPrice * _quantity <= msg.value, "Not enough ETH");
+
+    customerMintMonsterBlock(_quantity, _deadline);
+
+    amountPreMintableByAddress[msg.sender] -= _quantity;
+  }
+
+  function pushPreMinters(address[] memory _preMinters, uint256[] memory _amounts) external onlyOwner whenPaused {
+    require(_preMinters.length == _amounts.length);
+
+    for(uint8 i = 0; i < _amounts.length; i++) {
+      amountPreMintableByAddress[_preMinters[i]] = amountPreMintableByAddress[_preMinters[i]] + _amounts[i];
+    }
+  }
+
+  function getAmountPreMintable(address _userAddress) public view returns (uint256 amountPreMintable) {
+    amountPreMintable = amountPreMintableByAddress[_userAddress];
+  }
+
+  /* Owner Minting */
+
+  function ownerMintMonsterBlocks(uint256 _quantity) external onlyOwner {
+    require(_ownerMintedTokenIds.current() < maxOwnerMintedSupply, "Maximum minted");
+    require(_ownerMintedTokenIds.current() + _quantity <= maxOwnerMintedSupply, "Not enough left");
+    require(_quantity < maxMintLimit + 1, "Max mint is 20");
+
+    for (uint8 i = 0; i < _quantity; i++) {
+      _ownerMintedTokenIds.increment();
+    }
+
+    mintMonsterBlock(_quantity);
+  }
+
+  /* Regular Minting */
+
   event GenerateMonsterBlock(
     uint256 tokenId
   );
@@ -54,39 +115,115 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
     uint256 dna
   );
 
+  function generateMonsterBlock(uint256 _quantity, uint256 _deadline) external payable whenNotPaused {
+    require(_originalTokenIds.current() < maxSupply, "Maximum minted");
+    require(_originalTokenIds.current() + _quantity <= maxSupply, "Not enough left");
+    require(_quantity < maxMintLimit + 1, "Max mint is 20");
+    require(NFTMintPrice * _quantity <= msg.value, "Not enough ETH");
+
+    customerMintMonsterBlock(_quantity, _deadline);
+  }
+
+  function customerMintMonsterBlock(uint256 _quantity, uint256 _deadline) internal {
+    uint256 vrfRequestsNeeded = (_quantity + 4) / 5;
+
+    address[] memory path = new address[](2);
+    path[0] = uniswapRouter.WETH();
+    path[1] = LinkToken;
+    uniswapRouter.swapETHForExactTokens{value: msg.value} (LinkFee * vrfRequestsNeeded, path, address(this), _deadline);
+
+    mintMonsterBlock(_quantity);
+  }
+
+  function mintMonsterBlock(uint256 _quantity) internal {
+    require(LINK.balanceOf(address(this)) >= LinkFee, "Not enough LINK");
+    bytes32 requestId;
+
+    for (uint8 i = 0; i < _quantity; i++) {
+      _tokenIds.increment();
+
+      if (_quantity % 5 == 0) {
+        requestId = requestRandomness(keyHash, LinkFee);
+      }
+      vrfRequestIds[requestId].push(_tokenIds.current());
+
+      _safeMint(msg.sender, _tokenIds.current());
+
+      stacks[_tokenIds.current()] = [_tokenIds.current()];
+      _originalTokenIds.increment();
+
+      emit GenerateMonsterBlock(_tokenIds.current());
+    }
+  }
+
+  /* Stacking */
+
   event StackMonsterBlock(
     uint256 tokenId1,
     uint256 tokenId2,
     uint256 resultTokenId
   );
 
-  constructor()
+  function engageStackinator(uint256 _bottomToken, uint256 _topToken) external {
+    require(_exists(_bottomToken), "Bottom token does not exist");
+    require(_exists(_topToken), "Top token does not exist");
+    require(_isApprovedOrOwner(msg.sender, _bottomToken), "Not approved for bottom token");
+    require(_isApprovedOrOwner(msg.sender, _topToken), "Not approved for top token");
+    require(_bottomToken != _topToken, "Tokens cannot be the same");
+    require(stacks[_bottomToken].length > 1 || monsterBlocksDna[_bottomToken] != 0, "No traits for bottom token yet");
+    require(stacks[_topToken].length > 1 || monsterBlocksDna[_topToken] != 0, "No traits for top token yet");
+
+    _tokenIds.increment();
+
+    _burn(_bottomToken);
+    _burn(_topToken);
+
+    _safeMint(msg.sender, _tokenIds.current());
+
+    for (uint8 i = 0; i < stacks[_bottomToken].length; i++) {
+      stacks[_tokenIds.current()].push(stacks[_bottomToken][i]);
+    }
+    for (uint8 i = 0; i < stacks[_topToken].length; i++) {
+      stacks[_tokenIds.current()].push(stacks[_topToken][i]);
+    }
+
+    emit StackMonsterBlock(_bottomToken, _topToken, _tokenIds.current());
+  }
+
+  /* Constructor */
+
+  constructor(address _withdrawContract, address _charityAddress)
     ERC721("MonsterBlocks", "MONSTERBLOCK")
     VRFConsumerBase(VRFCoordinator, LinkToken)
   {
     // TODO: Update for Mainnet
     uniswapRouter = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
 
-    _pause(); // Start in paused sale state
+    withdrawContract = _withdrawContract;
+    charityAddress = _charityAddress;
+
+    // Start in paused sale state
+    pauseSale();
+    pausePreMinting();
 
     setBaseURI('https://api.monsterblocks.io/metadata/');
 
-    traitProbabilities[0] = [16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 15, 15, 15, 15, 15, 15, 15, 15];
+    traitProbabilities[0] = [16, 16, 16, 16, 16, 16, 16, 16, 16, 16, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15];
     traitCategories[0] = "Base Block";
 
-    traitProbabilities[1] = [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11];
+    traitProbabilities[1] = [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11];
     traitCategories[1] = "Middle Block";
 
-    traitProbabilities[2] = [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11];
+    traitProbabilities[2] = [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11];
     traitCategories[2] = "Top Block";
 
-    traitProbabilities[3] = [27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 0];
+    traitProbabilities[3] = [18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 0];
     traitCategories[3] = "Base Flourish";
 
-    traitProbabilities[4] = [27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 0];
+    traitProbabilities[4] = [18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 0];
     traitCategories[4] = "Middle Flourish";
 
-    traitProbabilities[5] = [27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 27, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 26, 0];
+    traitProbabilities[5] = [18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 18, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 0];
     traitCategories[5] = "Top Flourish";
 
     traitNames[0] = [
@@ -121,8 +258,8 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       'Green Lethargic Giraffe',
       'Green Pensive Serpent',
       'Blue Pensive Serpent',
-      'Green Beleagured Troll',
-      'Orange Beleagured Troll',
+      'Green Beleaguered Troll',
+      'Orange Beleaguered Troll',
       'Gold Contemplative Grizzly',
       'Stone Contemplative Grizzly',
       'Burdened Hobgoblin',
@@ -152,10 +289,13 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       'Milk Livered Scoundrel',
       'Paunchy Chum',
       'Boxed Cat',
-      'Masked Troll'
+      'Masked Troll',
+      'Henrique',
+      'Frogwig',
+      'Flexible Menace'
     ];
 
-    string[85] memory smallBlockTraits = [
+    string[89] memory smallBlockTraits = [
       'Welcoming Palms',
       'Wandering Gnome',
       'Volcanic Eruption',
@@ -180,6 +320,8 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       'Counterfeit Sphinx',
       'Happy Meal Crown',
       'Primitive Salamander',
+      'Trifling Hornrat',
+      'Ectoplasm',
       'Red Grisly Harpy',
       'Green Grisly Harpy',
       'Stone Grisly Harpy',
@@ -228,7 +370,7 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       'Log',
       'Quizzical Pig',
       'Omnipotent Mutant',
-      'Psychadelic Bison',
+      'Psychedelic Bison',
       'Scrunched Brain',
       'Concerned Loaf',
       'Uncultured Swine',
@@ -240,12 +382,14 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       'Just Some Bricks',
       'Metallic Odious Bird',
       'Putrid Underling',
-      'Useless Machine'
+      'Useless Machine',
+      'Irritated Aardvark',
+      'Hungry Komodo'
     ];
     traitNames[1] = smallBlockTraits;
     traitNames[2] = smallBlockTraits;
 
-    string[39] memory flourishTraits = [
+    string[59] memory flourishTraits = [
       'Stone Stern Fists',
       'Blue Stern Fists',
       'Orange Stern Fists',
@@ -284,6 +428,26 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       'Butterfly Wings',
       'Fortified Spikes',
       'Skeletal Wings',
+      'Tongue',
+      'Tentacles',
+      'Sumptuous Cactus',
+      'Skinless Wings',
+      'Satellite Dishes',
+      'Roman Columns',
+      'Ram Horns',
+      'Ominous Cloud',
+      'Night and Day',
+      'Mounted Cannons',
+      'Mortal Chameleon',
+      'Helpful Hands',
+      'Green Feelers',
+      'Fishmonger Hands',
+      'Disapproving Eyes',
+      'Delightful Wings',
+      'Crocodile Mouths',
+      'Cheap Ghost',
+      'Buzzsaws',
+      'Blue Whiskers',
       'None'
     ];
     traitNames[3] = flourishTraits;
@@ -294,14 +458,16 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
       baseBlockFlourishOverrides[i] = true;
     }
 
-    for (uint256 i = 0; i < 24; i++) {
+    for (uint256 i = 0; i < 26; i++) {
       middleBlockFlourishOverrides[i] = true;
     }
 
-    for (uint256 i = 0; i < 24; i++) {
+    for (uint256 i = 0; i < 26; i++) {
       topBlockFlourishOverrides[i] = true;
     }
   }
+
+  /* Utility & Metadata */
 
   function latestSerialNumber() external view returns (uint256) {
     return _tokenIds.current();
@@ -354,117 +520,6 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
     return strConcat(resultString, '}');
   }
 
-  function ownerMintMonsterBlocks(uint256 _quantity) external onlyOwner {
-    require(_ownerMintedTokenIds.current() < maxOwnerMintedSupply, "Maximum minted");
-    require(_ownerMintedTokenIds.current() + _quantity <= maxOwnerMintedSupply, "Not enough left");
-    require(_quantity < maxMintLimit + 1, "Max mint is 10");
-
-    for (uint8 i = 0; i < _quantity; i++) {
-      _ownerMintedTokenIds.increment();
-    }
-
-    mintMonsterBlock(_quantity);
-  }
-
-  function pushPreMinters(address[] memory _preMinters, uint256[] memory _amounts) external onlyOwner whenPaused {
-    require(_preMinters.length == _amounts.length);
-
-    for(uint8 i = 0; i < _amounts.length; i++) {
-      amountPreMintableByAddress[_preMinters[i]] = amountPreMintableByAddress[_preMinters[i]] + amount[i];
-    }
-  }
-
-  function preMintMonsterBlock(uint256 _quantity, uint256 _deadline) external payable {
-    require(_originalTokenIds.current() < maxSupply, "Maximum minted");
-    require(_originalTokenIds.current() + _quantity <= maxSupply, "Not enough left");
-    require(_quantity < amountPreMintableByAddress[msg.sender] + 1, "Cannot pre-mint this many");
-    require(NFTMintPrice * _quantity <= msg.value, "Not enough ETH");
-
-    customerMintMonsterBlock(_quantity, _deadline);
-
-    amountPreMintableByAddress[msg.sender] -= _quantity;
-  }
-
-  function generateMonsterBlock(uint256 _quantity, uint256 _deadline) external payable whenNotPaused {
-    require(_originalTokenIds.current() < maxSupply, "Maximum minted");
-    require(_originalTokenIds.current() + _quantity <= maxSupply, "Not enough left");
-    require(_quantity < maxMintLimit + 1, "Max mint is 10");
-    require(NFTMintPrice * _quantity <= msg.value, "Not enough ETH");
-
-    customerMintMonsterBlock(_quantity, _deadline);
-  }
-
-  function engageStackinator(uint256 _bottomToken, uint256 _topToken) external {
-    require(_exists(_bottomToken), "Bottom token does not exist");
-    require(_exists(_topToken), "Top token does not exist");
-    require(_isApprovedOrOwner(msg.sender, _bottomToken), "Not approved for bottom token");
-    require(_isApprovedOrOwner(msg.sender, _topToken), "Not approved for top token");
-    require(_bottomToken != _topToken, "Tokens cannot be the same");
-    require(stacks[_bottomToken].length > 1 || monsterBlocksDna[_bottomToken] != 0, "No traits for bottom token yet");
-    require(stacks[_topToken].length > 1 || monsterBlocksDna[_topToken] != 0, "No traits for top token yet");
-
-    _tokenIds.increment();
-
-    _burn(_bottomToken);
-    _burn(_topToken);
-
-    _safeMint(msg.sender, _tokenIds.current());
-
-    for (uint8 i = 0; i < stacks[_bottomToken].length; i++) {
-      stacks[_tokenIds.current()].push(stacks[_bottomToken][i]);
-    }
-    for (uint8 i = 0; i < stacks[_topToken].length; i++) {
-      stacks[_tokenIds.current()].push(stacks[_topToken][i]);
-    }
-
-    emit StackMonsterBlock(_bottomToken, _topToken, _tokenIds.current());
-  }
-
-  function setLinkFee(uint256 _LinkFee) external onlyOwner {
-    LinkFee = _LinkFee;
-  }
-
-  function customerMintMonsterBlock(uint256 _quantity, uint256 _deadline) internal {
-    address[] memory path = new address[](2);
-    path[0] = uniswapRouter.WETH();
-    path[1] = LinkToken;
-    uniswapRouter.swapETHForExactTokens{value: msg.value} (LinkFee, path, address(this), _deadline);
-
-    mintMonsterBlock(_quantity);
-  }
-
-  function mintMonsterBlock(uint256 _quantity) internal {
-    require(LINK.balanceOf(address(this)) >= LinkFee, "Not enough LINK");
-    bytes32 requestId = requestRandomness(keyHash, LinkFee);
-
-    for (uint8 i = 0; i < _quantity; i++) {
-      _tokenIds.increment();
-
-      vrfRequestIds[requestId].push(_tokenIds.current());
-
-      _safeMint(msg.sender, _tokenIds.current());
-
-      stacks[_tokenIds.current()] = [_tokenIds.current()];
-      _originalTokenIds.increment();
-
-      emit GenerateMonsterBlock(_tokenIds.current());
-    }
-  }
-
-  function fulfillRandomness(bytes32 _requestId, uint256 _randomNumber) internal override {
-    for (uint8 i = 0; i < vrfRequestIds[_requestId].length; i++) {
-      uint256 blockDna;
-      if (i == 0) {
-        blockDna = _randomNumber;
-      } else {
-        blockDna = uint256(keccak256(abi.encode(_randomNumber, numberOfTraits * i)));
-      }
-      monsterBlocksDna[vrfRequestIds[_requestId][i]] = blockDna;
-
-      emit UpdateMonsterBlock(vrfRequestIds[_requestId][i], blockDna);
-    }
-  }
-
   function getMintedTrait(uint256 _tokenId, uint8 _traitIndex) internal view returns (uint256) {
     uint256 currentWeight = traitWeighting;
     uint256 dnaModuloWeight = (uint256(keccak256(abi.encode(monsterBlocksDna[_tokenId], _traitIndex + 1))) % currentWeight) + 1;
@@ -495,5 +550,25 @@ contract MonsterBlocks is MonsterBlockCoreERC721, VRFConsumerBase {
     }
 
     return resultString;
+  }
+
+  /* Chainlink */
+
+  function setLinkFee(uint256 _LinkFee) external onlyOwner {
+    LinkFee = _LinkFee;
+  }
+
+  function fulfillRandomness(bytes32 _requestId, uint256 _randomNumber) internal override {
+    for (uint8 i = 0; i < vrfRequestIds[_requestId].length; i++) {
+      uint256 blockDna;
+      if (i == 0) {
+        blockDna = _randomNumber;
+      } else {
+        blockDna = uint256(keccak256(abi.encode(_randomNumber, numberOfTraits * i)));
+      }
+      monsterBlocksDna[vrfRequestIds[_requestId][i]] = blockDna;
+
+      emit UpdateMonsterBlock(vrfRequestIds[_requestId][i], blockDna);
+    }
   }
 }
